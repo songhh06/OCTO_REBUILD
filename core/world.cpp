@@ -477,6 +477,121 @@ if(tl>0){Vec3 corr=tangent*(std::min(tl,cfg.friction*depth)/tl);a.x=a.x+corr*(a.
 
 
 
+// Dynamic rigid-prop face contacts. The legacy solver only collides
+// against eight spheres at the corners of each cube: an arm can pass
+// through the open middle of a face. Treat all eight masses as one
+// moving oriented box for collision, with equal-and-opposite impulses
+// distributed back to its actual C++ corner masses.
+void arm_box_contacts(){
+ if(!cfg.collisions||rigids.empty())return;
+ for(const auto& ids:rigids){
+  if(ids.size()!=8)continue;
+  Vec3 center{},old_center{};
+  for(int id:ids){center=center+p[id].x/8.;old_center=old_center+p[id].old/8.;}
+  const Vec3 axes[3]={
+   unit(p[ids[4]].x-p[ids[0]].x),
+   unit(p[ids[2]].x-p[ids[0]].x),
+   unit(p[ids[1]].x-p[ids[0]].x)
+  };
+  // Nonrectangular strain of the eight constraint-connected corner
+  // masses is small. Recompute spans from the current physical body.
+  const double ext[3]={
+   .5*norm(p[ids[4]].x-p[ids[0]].x),
+   .5*norm(p[ids[2]].x-p[ids[0]].x),
+   .5*norm(p[ids[1]].x-p[ids[0]].x)
+  };
+  for(auto& animal:animals)for(auto& arm:animal.arms){
+   for(size_t j=0;j+1<arm.p.size();++j){
+    const int id0=arm.p[j],id1=arm.p[j+1];
+    // A centerline segment spans real area between nodes. Check its
+    // midpoint too, so the gap between particles cannot enter the box.
+    for(int sample=0;sample<3;++sample){
+     const double t=sample==0?0.0:(sample==1?1.0:0.5);
+     auto& n0=p[id0];auto& n1=p[id1];
+     const Vec3 pos=n0.x*(1-t)+n1.x*t;
+     const Vec3 old=n0.old*(1-t)+n1.old*t;
+     const double rad=std::max(
+         n0.r*(1-t)+n1.r*t,
+         cfg.grounded_rest?
+          cfg.visual_arm_floor_radius*(1.-.38*(double(j)+t)/cfg.segments):0.);
+     const Vec3 local=pos-center,old_local=old-old_center;
+     double q[3],qold[3];
+     bool overlaps=true;
+     for(int a=0;a<3;++a){
+      q[a]=dot(local,axes[a]);qold[a]=dot(old_local,axes[a]);
+      if(std::abs(q[a])>ext[a]+rad)overlaps=false;
+     }
+     Vec3 normal{};
+     double depth=0.;
+     if(overlaps){
+      // Sphere vs complete OBB surface, not merely its 8 corners.
+      Vec3 closest{};
+      double outside2=0.;
+      for(int a=0;a<3;++a){
+       const double delta=q[a]-std::clamp(q[a],-ext[a],ext[a]);
+       closest=closest+axes[a]*delta;
+       outside2+=delta*delta;
+      }
+      if(outside2>1e-12){
+       const double distance=std::sqrt(outside2);
+       if(distance>=rad)continue;
+       normal=closest/distance;depth=rad-distance;
+      }else{
+       int axis=0;
+       for(int a=1;a<3;++a)
+        if(ext[a]-std::abs(q[a])<ext[axis]-std::abs(q[axis]))axis=a;
+       normal=axes[axis]*(q[axis]>=0?1.:-1.);
+       depth=ext[axis]-std::abs(q[axis])+rad;
+      }
+     }else{
+      // Continuous swept sphere vs OBB slab test. Even when the end
+      // point has escaped the far face within one substep, the sweep
+      // collides at its earliest expanded-face intersection.
+      double enter=0,leave=1;
+      int face=-1;double sign=0;
+      for(int a=0;a<3;++a){
+       const double d=q[a]-qold[a],bound=ext[a]+rad;
+       if(std::abs(d)<1e-10){
+        if(std::abs(qold[a])>bound){enter=2;break;}
+       }else{
+        double t0=(-bound-qold[a])/d,t1=(bound-qold[a])/d;
+        double first_sign=-1;
+        if(t0>t1){std::swap(t0,t1);first_sign=1;}
+        if(t0>enter){enter=t0;face=a;sign=first_sign;}
+        leave=std::min(leave,t1);
+       }
+      }
+      if(face<0||enter>leave||enter>1||enter<0)continue;
+      normal=axes[face]*sign;
+      // Position at first impact, with a small separating skin margin.
+      const Vec3 impact=old+(pos-old)*enter;
+      depth=std::max(0.,dot(impact-pos,normal))+.001;
+      ++diag.swept_contacts;
+     }
+     if(depth<=0||!finite(normal))continue;
+     depth=std::min(depth,.20);
+     ++diag.contact_count;
+     ++diag.animal_prop_contacts;
+     diag.max_penetration=std::max(diag.max_penetration,depth);
+     // Weighted mass distribution: the midpoint behaves as an
+     // interpolated segment contact, with equal reaction on the box.
+     const double wa=(1-t)*n0.inv,wb=t*n1.inv;
+     double rigid_inv=0;
+     for(int id:ids)rigid_inv+=p[id].inv/64.;
+     const double denominator=(1-t)*wa+t*wb+rigid_inv;
+     if(denominator<=1e-10)continue;
+     const double dl=depth/denominator;
+     n0.x=n0.x+normal*(wa*dl);
+     n1.x=n1.x+normal*(wb*dl);
+     for(int id:ids)p[id].x=p[id].x-normal*(p[id].inv*dl/8.);
+     n0.compression=std::max(n0.compression,depth*.5);
+     n1.compression=std::max(n1.compression,depth*.5);
+    }
+   }
+  }
+ }
+}
+
 void upright_motors(double h){
  // A damped restoring *torque*: opposite forces on two existing torso
  // particles, not a hidden transform snap. Contacts still determine
@@ -803,7 +918,7 @@ upright_motors(h);
 follow_surface(h);
 seek_floor_contact(h);
 rigid_center_sweeps();
-for(unsigned it=0;it<cfg.iterations;++it){auto c0=std::chrono::steady_clock::now();for(auto&e:d)distance(e,h);volumes(h);balloon_volume_constraints(h);section_area_constraints(h);bending(h);torsion(h);if(it%4==0||it+1==cfg.iterations)director_constraints(h);attachments(h);suction_constraints(h);diag.constraints_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-c0).count();auto t0=std::chrono::steady_clock::now();contacts();diag.collision_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();}
+for(unsigned it=0;it<cfg.iterations;++it){auto c0=std::chrono::steady_clock::now();for(auto&e:d)distance(e,h);volumes(h);balloon_volume_constraints(h);section_area_constraints(h);bending(h);torsion(h);if(it%4==0||it+1==cfg.iterations)director_constraints(h);attachments(h);suction_constraints(h);diag.constraints_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-c0).count();auto t0=std::chrono::steady_clock::now();contacts();arm_box_contacts();contacts();diag.collision_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();}
 rigid_center_sweeps();
 update_creep_memory(h);
 tissue_dynamics(h);
