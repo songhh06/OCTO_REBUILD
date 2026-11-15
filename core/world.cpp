@@ -207,62 +207,59 @@ animals.push_back(a);}
   }
  }
  for(unsigned k=0;k<c.rigid_count;++k){std::vector<int> ids;Vec3 center{double(k)*.65-.65,.32,1.35};for(int x:{-1,1})for(int y:{-1,1})for(int z:{-1,1})ids.push_back(particle(center+Vec3{x*.16,y*.16,z*.16},.125,.08,-1,-1,-1,int(k)));for(int i=0;i<8;++i)for(int j=i+1;j<8;++j)edge(ids[i],ids[j],1e-9);rigids.push_back(ids);}}
-double mantle_volume(const Animal& animal,std::vector<Vec3>* gradients=nullptr)const{
- // Oriented closed 24-triangle shell (12 ring-side + 12 polar-cap).
- // A single XPBD volume constraint avoids the local tetrahedral
- // overconstraint that made the earlier prototype springy/inverted.
+double mantle_volume(const Animal& animal,std::array<Vec3,15>* grads=nullptr)const{
+ // Only 15 particles participate: 12 shell vertices, 2 mantle caps,
+ // and the reference body center. Never allocate an O(world size)
+ // gradient for each animal, iteration and simulation substep.
+ std::array<int,15> ids{};
+ for(int i=0;i<12;++i)ids[i]=animal.shell[i];
+ ids[12]=animal.body[4];ids[13]=animal.body[3];ids[14]=animal.body[0];
  std::array<std::array<int,3>,24> faces{};
  int t=0;
  for(int k=0;k<6;++k){
   const int next=(k+1)%6;
-  faces[t++]={animal.shell[k],animal.shell[6+k],animal.shell[6+next]};
-  faces[t++]={animal.shell[k],animal.shell[6+next],animal.shell[next]};
-  faces[t++]={animal.body[4],animal.shell[k],animal.shell[next]};
-  faces[t++]={animal.body[3],animal.shell[6+next],animal.shell[6+k]};
+  faces[t++]={k,6+k,6+next};
+  faces[t++]={k,6+next,next};
+  faces[t++]={12,k,next};
+  faces[t++]={13,6+next,6+k};
  }
- const int origin=animal.body[0];
- const Vec3 center=p[origin].x;
- if(gradients)gradients->assign(p.size(),Vec3{});
+ const Vec3 center=p[ids[14]].x;
+ if(grads)grads->fill(Vec3{});
  double volume=0;
  for(const auto& face:faces){
-  const Vec3 a=p[face[0]].x-center;
-  const Vec3 b=p[face[1]].x-center;
-  const Vec3 c=p[face[2]].x-center;
+  const Vec3 a=p[ids[face[0]]].x-center;
+  const Vec3 b=p[ids[face[1]]].x-center;
+  const Vec3 c=p[ids[face[2]]].x-center;
   volume+=dot(a,cross(b,c))/6.;
-  if(gradients){
-   const Vec3 ga=cross(b,c)/6.;
-   const Vec3 gb=cross(c,a)/6.;
-   const Vec3 gc=cross(a,b)/6.;
-   (*gradients)[face[0]]=(*gradients)[face[0]]+ga;
-   (*gradients)[face[1]]=(*gradients)[face[1]]+gb;
-   (*gradients)[face[2]]=(*gradients)[face[2]]+gc;
-   (*gradients)[origin]=(*gradients)[origin]-ga-gb-gc;
+  if(grads){
+   const Vec3 ga=cross(b,c)/6.,gb=cross(c,a)/6.,gc=cross(a,b)/6.;
+   (*grads)[face[0]]=(*grads)[face[0]]+ga;
+   (*grads)[face[1]]=(*grads)[face[1]]+gb;
+   (*grads)[face[2]]=(*grads)[face[2]]+gc;
+   (*grads)[14]=(*grads)[14]-ga-gb-gc;
   }
  }
  return volume;
 }
 void balloon_volume_constraints(double h){
  if(!cfg.grounded_rest)return;
- // Maintain total mantle content but allow local side-wall yielding,
- // bulging, and cap flattening under gravity/rigid object contacts.
+ const double alpha=cfg.mantle_balloon_compliance/(h*h);
  for(auto& animal:animals){
-  std::vector<Vec3> gradient;
-  double volume=mantle_volume(animal,&gradient);
+  std::array<Vec3,15> grads{};
+  const double volume=mantle_volume(animal,&grads);
   if(std::abs(animal.shell_rest_volume)<1e-9)continue;
-  // Negative initial shell winding is legitimate: preserve its sign.
-  const double reference=animal.shell_rest_volume;
-  double denom=cfg.mantle_balloon_compliance/(h*h);
-  for(size_t i=0;i<p.size();++i)
-   if(dot(gradient[i],gradient[i])>0)denom+=p[i].inv*dot(gradient[i],gradient[i]);
-  if(denom<1e-16)continue;
-  const double alpha=cfg.mantle_balloon_compliance/(h*h);
-  double dl=(-(volume-reference)-alpha*animal.shell_lambda)/denom;
-  // Avoid pressure blowup after violent prop impacts.
+  std::array<int,15> ids{};
+  for(int i=0;i<12;++i)ids[i]=animal.shell[i];
+  ids[12]=animal.body[4];ids[13]=animal.body[3];ids[14]=animal.body[0];
+  double denominator=alpha;
+  for(int i=0;i<15;++i)
+   denominator+=p[ids[i]].inv*dot(grads[i],grads[i]);
+  if(denominator<1e-16)continue;
+  double dl=(-(volume-animal.shell_rest_volume)-alpha*animal.shell_lambda)/denominator;
   dl=std::clamp(dl,-.003,.003);
   animal.shell_lambda+=dl;
-  for(size_t i=0;i<p.size();++i)
-   if(dot(gradient[i],gradient[i])>0)
-    p[i].x=p[i].x+gradient[i]*(p[i].inv*dl);
+  for(int i=0;i<15;++i)
+   p[ids[i]].x=p[ids[i]].x+grads[i]*(p[ids[i]].inv*dl);
  }
 }
 void distance(D& e,double h){auto&a=p[e.a];auto&b=p[e.b];Vec3 delta=b.x-a.x;double l=norm(delta);if(l<1e-12)return;double alpha=e.compliance/(h*h),dl=(-(l-e.rest)-alpha*e.lambda)/(a.inv+b.inv+alpha);e.lambda+=dl;Vec3 impulse=delta*(dl/l);a.x=a.x-impulse*a.inv;b.x=b.x+impulse*b.inv;}
@@ -503,6 +500,21 @@ void arm_box_contacts(){
   for(auto& animal:animals)for(auto& arm:animal.arms){
    for(size_t j=0;j+1<arm.p.size();++j){
     const int id0=arm.p[j],id1=arm.p[j+1];
+    // Fast swept-sphere rejection around the entire moving segment.
+    // This avoids O(animals * arms * sections * boxes) narrowphase
+    // work for the overwhelming majority of distant arm sections.
+    const Vec3 mid=(p[id0].x+p[id1].x)*.5;
+    const Vec3 previous=(p[id0].old+p[id1].old)*.5;
+    const Vec3 old_delta=previous-old_center;
+    const Vec3 travel=(mid-center)-old_delta;
+    const double travel2=dot(travel,travel);
+    const double time_of_closest=travel2>1e-12?
+        std::clamp(-dot(old_delta,travel)/travel2,0.,1.):0.;
+    const Vec3 nearest=old_delta+travel*time_of_closest;
+    const double maximum_span=.5*norm(p[id1].x-p[id0].x);
+    const double box_extent=std::sqrt(ext[0]*ext[0]+ext[1]*ext[1]+ext[2]*ext[2]);
+    if(norm(nearest)>box_extent+std::max(p[id0].r,p[id1].r)+
+                      maximum_span+cfg.visual_arm_floor_radius+.02)continue;
     // A centerline segment spans real area between nodes. Check its
     // midpoint too, so the gap between particles cannot enter the box.
     for(int sample=0;sample<3;++sample){
