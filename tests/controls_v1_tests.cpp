@@ -393,6 +393,41 @@ int main(){try{
    require(max_root_relative>.003,
            "arm root may not remain welded to the torso cage");
   }
+  // Complete dynamic prop faces, not just the eight corner spheres.
+  // Pull an active arm tip through the geometric middle of a cube.
+  // If the gap between corners is unprotected the rod ends up inside.
+  {WorldConfig scene;scene.animals=1;scene.rigid_count=3;
+   scene.grounded_rest=true;scene.spawn_height=.27;
+   scene.upright_strength=.08;scene.auto_suction=false;
+   PhysicsWorld world(scene);
+   DragCommand move;move.kind=DragCommand::Kind::ArmTip;
+   move.index=0;move.arm=0;move.target={0,.32,1.35};
+   move.stiffness=125;move.max_force=30;
+   require(world.drag(move),"arm-box face push command accepted");
+   double worst_intrusion=1e9,max_balloon_error=0;
+   uint64_t body_contacts=0;
+   for(int t=0;t<240;++t){
+    require(world.step(),"face-colliding octopus world remains finite");
+    auto snap=world.snapshot();
+    max_balloon_error=std::max(max_balloon_error,
+                               snap.diagnostics.max_mantle_volume_error);
+    body_contacts+=snap.diagnostics.animal_prop_contacts;
+    for(const auto& box:snap.rigids)for(const auto& arm:snap.animals[0].arms)
+     for(const auto& pt:arm.nodes){
+      const double extent=std::max({std::abs(pt.x-box.center.x),
+                                    std::abs(pt.y-box.center.y),
+                                    std::abs(pt.z-box.center.z)});
+      worst_intrusion=std::min(worst_intrusion,extent);
+      require(extent>.115,"arm centerline entered interior of rigid cube");
+     }
+   }
+   std::cout<<"BOX_FACE_COLLISION minimum_axis_distance="<<worst_intrusion
+            <<" animal_prop_contacts="<<body_contacts
+            <<" mantle_balloon_relative_error="<<max_balloon_error<<"\n";
+   require(body_contacts>0,"live arm must collide against full box faces");
+   require(std::isfinite(max_balloon_error)&&max_balloon_error<.8,
+           "water-balloon mantle conserves bounded global volume");
+  }
   std::cout<<"control v1 tests passed\n";
   return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
