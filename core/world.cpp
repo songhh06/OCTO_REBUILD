@@ -933,7 +933,13 @@ for(auto&a:p){diag.linear_momentum=diag.linear_momentum+a.v/a.inv;diag.angular_m
  const double error=std::abs((volume(t)-t.rest)/t.rest);
  if(t.soft_volume)diag.max_soft_volume_error=std::max(diag.max_soft_volume_error,error);
  else diag.max_volume_error=std::max(diag.max_volume_error,error);
-}for(auto&a:animals)for(auto&ar:a.arms){if(ar.attached!=-1)++diag.attachments;for(const auto& suction:ar.suckers)if(suction.attached!=-1)++diag.attachments;}++tick;time+=cfg.fixed_dt;diag.step_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return true;}
+}for(auto&animal:animals){
+ if(cfg.grounded_rest&&std::abs(animal.shell_rest_volume)>1e-9)
+  diag.max_mantle_volume_error=std::max(diag.max_mantle_volume_error,
+    std::abs(mantle_volume(animal)-animal.shell_rest_volume)/
+    std::abs(animal.shell_rest_volume));
+}
+for(auto&a:animals)for(auto&ar:a.arms){if(ar.attached!=-1)++diag.attachments;for(const auto& suction:ar.suckers)if(suction.attached!=-1)++diag.attachments;}++tick;time+=cfg.fixed_dt;diag.step_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return true;}
 RenderSnapshot snapshot()const{RenderSnapshot s;s.tick=tick;s.time=time;s.diagnostics=diag;for(auto&a:animals){AnimalSnapshot as;as.center=p[a.body[0]].x;as.orientation=frame(p[a.body[5]].x-p[a.body[6]].x);for(int b:a.body)as.body_nodes.push_back(p[b].x);for(int shell:a.shell)as.body_nodes.push_back(p[shell].x);for(int k=0;k<8;++k){auto&ar=a.arms[k];auto&out=as.arms[k];out.uncoil_progress=ar.uncoil_front;for(int id:ar.p)out.nodes.push_back(p[id].x);for(unsigned j=0;j<cfg.segments;++j){Vec3 tangent=p[ar.p[j+1]].x-p[ar.p[j]].x;out.frames.push_back(roll_frame(ar.directors[j].q,ar.roll[j].angle));out.angular_velocities.push_back(ar.directors[j].omega);out.material_roll.push_back(ar.roll[j].angle);double r=std::min(.12,ar.radius[j]*std::sqrt((.9/cfg.segments)/std::max(norm(tangent),1e-6)));if(!ar.volume_rings.empty()){
   // The four material surface masses determine the displayed section,
   // rather than prescribing an ellipse from the centerline. The
