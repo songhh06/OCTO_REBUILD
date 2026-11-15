@@ -803,6 +803,16 @@ void tissue_dynamics(double h){
    const auto& b=p[arm.p[j+1]];
    const double r=std::max(.004,arm.radius[j]);
    pressure[j]=std::clamp(std::max(a.compression,b.compression)/r,0.,2.5);
+   if(cfg.grounded_rest&&cfg.floor){
+    // The floor's normal reaction is present even after XPBD has
+    // eliminated positional penetration. Use actual contact proximity
+    // instead of only transient overlap depth to drive chewy flattening.
+    const double floor_gap=std::min(a.x.y-floor_surface_radius(a),
+                                    b.x.y-floor_surface_radius(b));
+    if(floor_gap<.012)
+     pressure[j]=std::max(pressure[j],.28*
+                         std::clamp((.012-floor_gap)/.012,0.,1.));
+   }
   }
   for(size_t j=0;j<arm.tissue.size();++j){
    auto& tissue=arm.tissue[j];
@@ -821,7 +831,8 @@ void tissue_dynamics(double h){
                          ?cfg.tissue_viscosity:cfg.tissue_relaxation*.35;
    const double response=1.0-std::exp(-rate*h);
    const double previous=tissue.transverse;
-   tissue.transverse=std::clamp(previous+(desired-previous)*response,.40,1.50);
+   tissue.transverse=std::clamp(previous+(desired-previous)*response,
+                                cfg.grounded_rest?cfg.arm_radial_yield:.40,1.50);
    tissue.rate=(tissue.transverse-previous)/h;
    tissue.pressure=material_load;
    arm.squash[j]=tissue.transverse;
