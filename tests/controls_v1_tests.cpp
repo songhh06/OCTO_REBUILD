@@ -325,6 +325,16 @@ int main(){try{
            "resting visible arm and mantle envelopes must clear floor");
    require(belly_contacts>0,
            "mantle lower cage must physically contact the ground");
+   double minimum_thickness=1.0;
+   for(const auto& ar:snapshot.animals[0].arms)
+    for(const auto& q:ar.tissue_strain)
+     minimum_thickness=std::min(minimum_thickness,q[1]);
+   std::cout<<"CHEWY_ARM_REST min_thickness_ratio="<<minimum_thickness
+            <<" mantle_volume_error="<<snapshot.diagnostics.max_mantle_volume_error<<"\n";
+   require(minimum_thickness<.85,
+           "passive chewy arm must visibly flatten under sustained floor contact");
+   require(snapshot.diagnostics.max_mantle_volume_error<.12,
+           "water-balloon mantle must maintain outer-shell volume");
    require(snapshot.diagnostics.attachments==0,
            "uncommanded resting octopus cannot glue every arm to the floor");
   }
