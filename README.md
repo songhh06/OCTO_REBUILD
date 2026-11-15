@@ -292,3 +292,45 @@ This improvement does **not** imply that the private GLB's skin weights
 now create a completely smooth arm-to-body visual junction; vertex
 weight painting/re-rigging may still be needed after inspecting the
 source asset on the user's PC.
+
+## Collision repair and tissue-specific materials (2026-11-15)
+
+**Arm versus dynamic props:** the C++ collision solver now checks
+not just eight prop-corner spheres but also the **complete oriented
+box faces**, including the swept paths of arm nodes and interpolated
+segment midpoints. Corrections apply equal/opposite position impulses
+to the actual arm and eight connected rigid-corner masses in the
+single C++ world. A final contact projection occurs **after** arm
+radius changes during the step, preventing late floor penetration
+from axial expansion. A cheap swept bound skips distant segments.
+
+**Mantle is now modeled separately as a low-resolution water balloon.**
+Its 12 dynamic outer-ring masses and two end-cap nodes enclose a
+24-triangle shell. An XPBD **single global volume constraint** holds
+the shell's total volume approximately constant while allowing the
+surface to flatten and bulge under pressure; the internal seven-node
+body cage is more compliant in grounded gameplay mode. This is
+not a fully sampled FEM balloon or a per-vertex fluid pressure solver.
+
+**Arms have distinct chewy, viscous tissue.** Sustained floor contact
+now supplies pressure even after solver penetration is removed,
+driving gradual transverse flattening and reciprocal lateral
+expansion rather than springy one-frame impulses. Unloaded arms
+recover slowly, while the existing Cosserat muscles and suckers
+remain the motor/adhesion controls. The material parameter
+`arm_radial_yield=0.48` bounds the local thinner transverse scale.
+
+Native regression now pulls an arm through the middle of a dynamic
+box and checks that no sampled arm centerline enters its interior;
+measured minimum axis-aligned clearance was 0.2003 m for a box with
+0.16 m half-size and 1772+ animal/prop contact observations.
+Under a strong sustained load the mantle relative volume deviation
+was ~0.7%; at grounded rest its volume residual was ~0.014% and
+an arm's thinnest transverse ratio fell to ~0.552. These are
+**physics-state tests**, not confirmation that the original private
+GameReady GLB's full visible surface cannot clip geometry.
+
+The user's asset is intentionally untracked; verify real mesh collision
+and material behavior with `PLAY_DEMO.cmd` after pulling the changes.
+A fully watertight triangle-based mesh contact and calibrated
+muscular hydrostat constitutive model remain outside this patch.
