@@ -62,6 +62,8 @@ struct WorldConfig {
     double visual_mantle_floor_radius=0.065; // world m: cage surface clearance
     double arm_root_shell_compliance=3e-5; // m/N XPBD: local mantle-to-arm tissue junction
     double arm_root_center_compliance=2e-4; // softer deep-tissue tether, avoids rigid root hub
+    double mantle_balloon_compliance=8e-8; // low-compliance global shell volume, pressure-like
+    double arm_radial_yield=0.48; // passive chewy arm flattened thickness / diameter
     bool reach_ground_on_extend=true;   // guide ungripped extended tips to contact
     std::uint32_t rigid_count=3;
     bool auto_suction=false;      // enabled for gameplay; original native tests retain passive baseline
