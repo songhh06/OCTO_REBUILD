@@ -289,3 +289,24 @@ movement and not an acceptable calibration for final real-animal
 fidelity. Existing idle case: torso y=0.224709, 94.79% distal nodes
 near ground; visual proxy floor clipping 0, lower belly contact 1.
 Actual private GLB skin continuity still requires local visual review.
+
+2026-11-15 material split / box collision pass: fixed gap in previous
+prop collision model (only 8 corner spheres were checked) by adding
+continuous swept sphere-vs-oriented-box face contacts for rod nodes and
+segment midpoints, with mass-weighted reactions to all 8 corners.
+After axial-length correction updates arm radius, perform a final
+floor/prop contact pass. Swept broadphase rejects distant sections,
+reducing the CPU regression from the first unoptimized contact pass.
+Separately, mantle shell 12 nodes + two caps now have a closed
+24-triangle oriented volume with one XPBD global pressure-like
+constraint. The 7-node inner cage is more compliant in grounded mode.
+Arms use slow nonoscillatory, pressure-loaded 'chewy' transverse
+flattening with reciprocal lateral bulge; resting contact pressure
+persists without requiring deep floor penetration. All physical
+interactions remain in the same C++ solver. Added explicit diagnostic
+max_mantle_volume_error and a real arm-vs-box interior CTest.
+CI Linux tests: face-center push stayed outside box, centerline
+minimum axis distance ~0.2003 m, mantle max relative volume deviation
+~0.00714 under that load, ground rest ~0.000134; resting arm minimum
+thickness ratio ~0.552. Private GLB not in CI: rendered triangle
+penetration and visual 'water-balloon/noodle' fidelity unverified.
