@@ -74,7 +74,8 @@ const auto rotate_spawn=[&](Vec3 v)->Vec3{
  return {v.x*cr-v.y*sr,v.x*sr+v.y*cr,v.z};
 };
 for(Vec3 off:std::array<Vec3,7>{{{0,0,0},{.2,0,0},{-.2,0,0},{0,.24,0},{0,-.16,0},{0,0,.2},{0,0,-.2}}})a.body.push_back(particle(center+rotate_spawn(off),.12,.065,int(n)));
-for(int i=0;i<7;++i)for(int j=i+1;j<7;++j)edge(a.body[i],a.body[j],2e-5*c.softness);
+for(int i=0;i<7;++i)for(int j=i+1;j<7;++j)
+ edge(a.body[i],a.body[j],(c.grounded_rest?8e-5:2e-5)*c.softness);
 for(int x:{1,2})for(int y:{3,4})for(int z:{5,6}){T t{{a.body[0],a.body[x],a.body[y],a.body[z]},0};t.rest=volume(t);tetra.push_back(t);}
  // Low-resolution deforming mantle tissue: two rings of six dynamic
  // particles. Each particle collides with terrain/props and reacts
@@ -947,6 +948,12 @@ update_creep_memory(h);
 tissue_dynamics(h);
 update_suckers(h);
 for(auto&a:animals)for(auto&ar:a.arms)for(unsigned j=0;j<cfg.segments;++j){double l=norm(p[ar.p[j+1]].x-p[ar.p[j]].x);double pressure=std::max(p[ar.p[j]].compression,p[ar.p[j+1]].compression);(void)pressure;p[ar.p[j]].r=ar.radius[j]*std::sqrt((.9/cfg.segments)/std::max(l,1e-5));p[ar.p[j]].r=std::min(.1,p[ar.p[j]].r);}
+// Refresh the final contact solution after the rod's radius changes
+// with axial stretch. Without this pass a point can be legal at radius
+// .036 before update and be buried inside terrain at radius .08 after.
+contacts();
+arm_box_contacts();
+contacts();
 for(auto&a:p){a.v=(a.x-a.old)/h;if(!finite(a.x)||!finite(a.v)){++diag.nonfinite_count;return false;}}
 damp_arm_relative_velocities(h);
 for(auto&a:animals)for(auto&ar:a.arms)for(auto&roll:ar.roll){roll.omega=(roll.angle-roll.old)/h;if(!std::isfinite(roll.angle)||!std::isfinite(roll.omega)){++diag.nonfinite_count;return false;}}
