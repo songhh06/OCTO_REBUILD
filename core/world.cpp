@@ -40,7 +40,7 @@ struct Sucker{
 };
 struct TissueSection{double transverse=1,rate=0,pressure=0;};
 struct Arm{std::vector<TissueSection> tissue;std::vector<Sucker> suckers;double peel_clock=0;double uncoil_front=0;unsigned arm_index=0;std::vector<int> p;std::vector<double> radius;std::vector<double> squash;std::vector<Roll> roll;std::vector<Director> directors;std::vector<Vec3> bend_lambda,bend_creep;std::vector<int> axial_edges;std::vector<std::array<int,4>> volume_rings;MuscleCommand target{},active{};int attached=-1;Vec3 anchor{};double attach_rest=0;};
-struct Animal{std::vector<int> body;std::vector<int> shell;std::array<Arm,8> arms;};
+struct Animal{std::vector<int> body;std::vector<int> shell;std::array<Arm,8> arms;double shell_rest_volume=0,shell_lambda=0;};
 WorldConfig cfg;bool release_held=false;std::vector<P> p;std::vector<D> d;std::vector<T> tetra;std::vector<Animal> animals;std::vector<std::vector<int>> rigids;std::vector<Bounds> contact_bounds;std::vector<int> contact_order;DragCommand drag;Diagnostics diag;std::uint64_t tick=0;double time=0;
 int particle(Vec3 x,double mass,double radius,int animal=-1,int arm=-1,int node=-1,int rigid=-1){p.push_back({x,x,{},1/mass,radius,animal,arm,node,rigid});return int(p.size()-1);}
 void edge(int a,int b,double compliance){const double rest=norm(p[a].x-p[b].x);d.push_back({a,b,rest,compliance,0,rest,0,false,false});}
@@ -65,7 +65,9 @@ if(c.animals>64||c.segments<2||c.segments>64||c.substeps<1||c.substeps>64||c.ite
    !std::isfinite(c.visual_arm_floor_radius)||c.visual_arm_floor_radius<0||c.visual_arm_floor_radius>.2||
    !std::isfinite(c.visual_mantle_floor_radius)||c.visual_mantle_floor_radius<0||c.visual_mantle_floor_radius>.2||
    !std::isfinite(c.arm_root_shell_compliance)||c.arm_root_shell_compliance<0||c.arm_root_shell_compliance>.005||
-   !std::isfinite(c.arm_root_center_compliance)||c.arm_root_center_compliance<0||c.arm_root_center_compliance>.005)throw std::invalid_argument("Invalid WorldConfig");
+   !std::isfinite(c.arm_root_center_compliance)||c.arm_root_center_compliance<0||c.arm_root_center_compliance>.005||
+   !std::isfinite(c.mantle_balloon_compliance)||c.mantle_balloon_compliance<0||c.mantle_balloon_compliance>.001||
+   !std::isfinite(c.arm_radial_yield)||c.arm_radial_yield<.2||c.arm_radial_yield>1.)throw std::invalid_argument("Invalid WorldConfig");
 for(unsigned n=0;n<c.animals;++n){Animal a;Vec3 center{(double(n)-double(c.animals-1)/2)*c.spacing,c.spawn_height,0};
 const double cr=std::cos(c.spawn_roll),sr=std::sin(c.spawn_roll);
 const auto rotate_spawn=[&](Vec3 v)->Vec3{
@@ -95,6 +97,28 @@ for(int x:{1,2})for(int y:{3,4})for(int z:{5,6}){T t{{a.body[0],a.body[x],a.body
   edge(a.shell[level*6],a.shell[level*6+5],1.2e-4*c.softness);
  }
  for(int k=0;k<6;++k)edge(a.shell[k],a.shell[6+k],1.0e-4*c.softness);
+ // Rest volume of the 12-node mantle outer shell. This is separate
+ // from the rigid-ish seven-point torso cage; the shell can change shape
+ // while maintaining a water-balloon-style global volume.
+ // Six quads connect two rings and two pole caps close the surface.
+ // Signed orientation is corrected when evaluating the volume.
+ auto shell_vol=[&](const Animal& animal)->double{
+  const Vec3 o=p[animal.body[0]].x;
+  double total=0;
+  auto tri=[&](int ia,int ib,int ic){
+   Vec3 u=p[ia].x-o,v=p[ib].x-o,w=p[ic].x-o;
+   total+=dot(u,cross(v,w))/6.0;
+  };
+  for(int k=0;k<6;++k){
+   int next=(k+1)%6;
+   tri(animal.shell[k],animal.shell[6+k],animal.shell[6+next]);
+   tri(animal.shell[k],animal.shell[6+next],animal.shell[next]);
+   tri(animal.body[4],animal.shell[k],animal.shell[next]);
+   tri(animal.body[3],animal.shell[6+next],animal.shell[6+k]);
+  }
+  return total;
+ };
+ a.shell_rest_volume=shell_vol(a);
 for(int k=0;k<8;++k){auto& ar=a.arms[k];ar.arm_index=k;ar.uncoil_front=0;double angle=k*std::acos(-1.)/4;Vec3 radial=rotate_spawn({std::sin(angle),0,std::cos(angle)});for(unsigned j=0;j<=c.segments;++j){double u=double(j)/c.segments;double radius=.036*(1-.8*u);ar.radius.push_back(radius);ar.p.push_back(particle(center+radial*(.2+.9*u),.012,radius,int(n),k,int(j)));if(j){edge(ar.p[j-1],ar.p[j],3e-7*c.softness);ar.axial_edges.push_back(int(d.size()-1));}}
 ar.squash.assign(c.segments,1.0);
 ar.tissue.resize(c.segments);
@@ -183,6 +207,64 @@ animals.push_back(a);}
   }
  }
  for(unsigned k=0;k<c.rigid_count;++k){std::vector<int> ids;Vec3 center{double(k)*.65-.65,.32,1.35};for(int x:{-1,1})for(int y:{-1,1})for(int z:{-1,1})ids.push_back(particle(center+Vec3{x*.16,y*.16,z*.16},.125,.08,-1,-1,-1,int(k)));for(int i=0;i<8;++i)for(int j=i+1;j<8;++j)edge(ids[i],ids[j],1e-9);rigids.push_back(ids);}}
+double mantle_volume(const Animal& animal,std::vector<Vec3>* gradients=nullptr)const{
+ // Oriented closed 24-triangle shell (12 ring-side + 12 polar-cap).
+ // A single XPBD volume constraint avoids the local tetrahedral
+ // overconstraint that made the earlier prototype springy/inverted.
+ std::array<std::array<int,3>,24> faces{};
+ int t=0;
+ for(int k=0;k<6;++k){
+  const int next=(k+1)%6;
+  faces[t++]={animal.shell[k],animal.shell[6+k],animal.shell[6+next]};
+  faces[t++]={animal.shell[k],animal.shell[6+next],animal.shell[next]};
+  faces[t++]={animal.body[4],animal.shell[k],animal.shell[next]};
+  faces[t++]={animal.body[3],animal.shell[6+next],animal.shell[6+k]};
+ }
+ const int origin=animal.body[0];
+ const Vec3 center=p[origin].x;
+ if(gradients)gradients->assign(p.size(),Vec3{});
+ double volume=0;
+ for(const auto& face:faces){
+  const Vec3 a=p[face[0]].x-center;
+  const Vec3 b=p[face[1]].x-center;
+  const Vec3 c=p[face[2]].x-center;
+  volume+=dot(a,cross(b,c))/6.;
+  if(gradients){
+   const Vec3 ga=cross(b,c)/6.;
+   const Vec3 gb=cross(c,a)/6.;
+   const Vec3 gc=cross(a,b)/6.;
+   (*gradients)[face[0]]=(*gradients)[face[0]]+ga;
+   (*gradients)[face[1]]=(*gradients)[face[1]]+gb;
+   (*gradients)[face[2]]=(*gradients)[face[2]]+gc;
+   (*gradients)[origin]=(*gradients)[origin]-ga-gb-gc;
+  }
+ }
+ return volume;
+}
+void balloon_volume_constraints(double h){
+ if(!cfg.grounded_rest)return;
+ // Maintain total mantle content but allow local side-wall yielding,
+ // bulging, and cap flattening under gravity/rigid object contacts.
+ for(auto& animal:animals){
+  std::vector<Vec3> gradient;
+  double volume=mantle_volume(animal,&gradient);
+  if(std::abs(animal.shell_rest_volume)<1e-9)continue;
+  // Negative initial shell winding is legitimate: preserve its sign.
+  const double reference=animal.shell_rest_volume;
+  double denom=cfg.mantle_balloon_compliance/(h*h);
+  for(size_t i=0;i<p.size();++i)
+   if(dot(gradient[i],gradient[i])>0)denom+=p[i].inv*dot(gradient[i],gradient[i]);
+  if(denom<1e-16)continue;
+  const double alpha=cfg.mantle_balloon_compliance/(h*h);
+  double dl=(-(volume-reference)-alpha*animal.shell_lambda)/denom;
+  // Avoid pressure blowup after violent prop impacts.
+  dl=std::clamp(dl,-.003,.003);
+  animal.shell_lambda+=dl;
+  for(size_t i=0;i<p.size();++i)
+   if(dot(gradient[i],gradient[i])>0)
+    p[i].x=p[i].x+gradient[i]*(p[i].inv*dl);
+ }
+}
 void distance(D& e,double h){auto&a=p[e.a];auto&b=p[e.b];Vec3 delta=b.x-a.x;double l=norm(delta);if(l<1e-12)return;double alpha=e.compliance/(h*h),dl=(-(l-e.rest)-alpha*e.lambda)/(a.inv+b.inv+alpha);e.lambda+=dl;Vec3 impulse=delta*(dl/l);a.x=a.x-impulse*a.inv;b.x=b.x+impulse*b.inv;}
 void volumes(double h){for(auto&t:tetra){auto a=p[t.p[0]].x,b=p[t.p[1]].x,c=p[t.p[2]].x,e=p[t.p[3]].x;std::array<Vec3,4> g;g[1]=cross(c-a,e-a)/6;g[2]=cross(e-a,b-a)/6;g[3]=cross(b-a,c-a)/6;g[0]=(g[1]+g[2]+g[3])*(-1);double alpha=(t.soft_volume?cfg.volumetric_compliance:1e-10*std::sqrt(cfg.softness))/(h*h),den=alpha;for(int i=0;i<4;++i)den+=p[t.p[i]].inv*dot(g[i],g[i]);double dl=(-(volume(t)-t.rest)-alpha*t.lambda)/den;t.lambda+=dl;for(int i=0;i<4;++i){auto&v=p[t.p[i]];v.x=v.x+g[i]*(v.inv*dl);}}}
 void section_area_constraints(double h){
@@ -708,6 +790,7 @@ for(auto&e:d){
  }
 }
 for(auto&t:tetra)t.lambda=0;
+for(auto&animal:animals)animal.shell_lambda=0;
 for(auto&a:animals)for(auto&ar:a.arms)std::fill(ar.bend_lambda.begin(),ar.bend_lambda.end(),Vec3{});
 for(auto&a:animals)for(auto&ar:a.arms)for(auto&roll:ar.roll){roll.lambda=0;roll.old=roll.angle;roll.omega*=std::exp(-cfg.damping*h);roll.angle+=roll.omega*h;}
 for(auto&a:animals)for(auto&ar:a.arms)for(auto&director:ar.directors){director.old=director.q;director.bend_lambda={};director.shear_lambda={};director.omega=director.omega*std::exp(-cfg.damping*h);director.q=rod_math::integrate(director.q,director.omega,h);}
@@ -720,7 +803,7 @@ upright_motors(h);
 follow_surface(h);
 seek_floor_contact(h);
 rigid_center_sweeps();
-for(unsigned it=0;it<cfg.iterations;++it){auto c0=std::chrono::steady_clock::now();for(auto&e:d)distance(e,h);volumes(h);section_area_constraints(h);bending(h);torsion(h);if(it%4==0||it+1==cfg.iterations)director_constraints(h);attachments(h);suction_constraints(h);diag.constraints_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-c0).count();auto t0=std::chrono::steady_clock::now();contacts();diag.collision_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();}
+for(unsigned it=0;it<cfg.iterations;++it){auto c0=std::chrono::steady_clock::now();for(auto&e:d)distance(e,h);volumes(h);balloon_volume_constraints(h);section_area_constraints(h);bending(h);torsion(h);if(it%4==0||it+1==cfg.iterations)director_constraints(h);attachments(h);suction_constraints(h);diag.constraints_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-c0).count();auto t0=std::chrono::steady_clock::now();contacts();diag.collision_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();}
 rigid_center_sweeps();
 update_creep_memory(h);
 tissue_dynamics(h);
