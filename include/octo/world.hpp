@@ -91,7 +91,7 @@ struct AnimalSnapshot {
 struct RigidSnapshot { Vec3 center{}; Quat orientation{}; Vec3 half_extents{0.16,0.16,0.16}; };
 struct Diagnostics {
     double step_ms=0, constraints_ms=0, collision_ms=0;
-    double max_penetration=0, max_volume_error=0, max_soft_volume_error=0, max_shear_error=0, kinetic_energy=0;
+    double max_penetration=0, max_volume_error=0, max_soft_volume_error=0, max_mantle_volume_error=0, max_shear_error=0, kinetic_energy=0;
     Vec3 linear_momentum{};
     Vec3 angular_momentum{}; // about world origin, includes material-roll spin
     std::uint64_t contact_count=0, candidate_pairs=0, attachments=0, broken_attachments=0, nonfinite_count=0;
